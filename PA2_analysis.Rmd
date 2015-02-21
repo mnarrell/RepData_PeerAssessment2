@@ -1,0 +1,136 @@
+---
+title: 'Levels Of Harm and Economic Damage from US Weather Events'
+author: "Matt Narrell"
+date: "February 22, 2015"
+output:
+  html_document:
+    highlight: pygments
+    keep_md: yes
+    theme: spacelab
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.path='figure/',
+                      warning=FALSE, message=FALSE)
+```
+
+## Synopsis
+This data analysis examines the level of harm and damage of weather events in the United States between the the years of 1950 and 2011.  The data are from the U.S. National Oceanic and Atmospheric Administration's (NOAA) storm database. This database tracks characteristics of major storms and weather events in the United States, including when and where they occur, as well as estimates of any fatalities, injuries, and property damage.
+
+Supplemental information on this data set can be found here:
+
+* National Weather Service [Storm Data Documentation](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf)
+* National Climatic Data Center Storm Events [FAQ](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2FNCDC%20Storm%20Events-FAQ%20Page.pdf)
+
+This data analysis will answer the following:
+
+1. Across the United States, which types of events are most harmful with respect to population health?
+2. Across the United States, which types of events have the greatest economic consequences?
+
+## Environment
+```{r message=FALSE}
+library("dplyr")
+library("reshape2")
+library("ggplot2")
+
+sessionInfo()
+```
+## Data Processing
+### Obtaining the data
+The data are downloaded from [here](https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2).  A timestamp of when the data are fetched is written for completeness.
+```{r cache=TRUE}
+local.data.archive <- "./data/StormData.csv.bz2"
+dir.create("./data", showWarnings = FALSE)
+dataSrcUri <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+download.file(dataSrcUri, local.data.archive, "curl")
+
+conn <- file("./data/data_fetch_timestamp.txt")
+timestamp <- paste("StormData downloaded from", dataSrcUri, "at", Sys.time())
+writeLines(timestamp, conn)
+close(conn)
+
+storm.data <- tbl_df(read.csv(bzfile("./data/StormData.csv.bz2"), stringsAsFactors = FALSE, na.strings = ""))
+```
+`r timestamp`
+
+Some initial examination:
+```{r cache=TRUE}
+str(storm.data)
+unique(storm.data$PROPDMGEXP)
+unique(storm.data$CROPDMGEXP)
+```
+The values for fatalities and injuries do not need adjustment.  The property and crop monetary values are expressed as a value and an exponent.  These exponent variables will need to be cleaned.
+
+### Cleaning the data
+This function will normalize the SI unit symbol of the exponent to its base ten value.  Any missing or unmatched values will be discarded.  The value is converted to a numeric for later calculation
+```{r cache=TRUE}
+format.exponent <- function(exp) {
+  exp[is.na(exp)] = "0"
+  exp <- gsub("h|H", "2", exp)
+  exp <- gsub("k|K", "3", exp)
+  exp <- gsub("m|M", "6", exp)
+  exp <- gsub("b|B", "9", exp)
+  exp <- gsub("\\+|\\?|\\-", "0", exp)
+  as.numeric(exp)
+  }
+
+unique(sapply(storm.data$PROPDMGEXP, format.exponent))
+unique(sapply(storm.data$CROPDMGEXP, format.exponent))
+```
+
+The exponents are formatted, and applied to their USD base values.  The **EVTYPE**, **FATALITIES** and **INJURIES** values are taken 'as-is'.
+```{r cache=TRUE}
+cleaned.storm.data <- storm.data %>% 
+  mutate(prop.dmg.exp = sapply(PROPDMGEXP, format.exponent), 
+         prop.dmg = PROPDMG * (10^prop.dmg.exp), 
+         crop.dmg.exp = sapply(CROPDMGEXP, format.exponent), 
+         crop.dmg = CROPDMG * (10^crop.dmg.exp)) %>% 
+  select(event.type = EVTYPE, fatalities = FATALITIES, injuries = INJURIES, prop.dmg, crop.dmg)  
+```
+The resulting exponents are cleaned, and only the interesting variables to this analysis are selected.
+```{r}
+str(cleaned.storm.data)
+remove(storm.data)
+```
+## Results
+### Question 1: Across the United States, which types of events are most harmful with respect to population health?
+```{r}
+harmful.events <- cleaned.storm.data %>% 
+  group_by(event.type) %>%
+  summarize(Fatalities = sum(fatalities), 
+            Injuries = sum(injuries)) %>% 
+  arrange(desc(Fatalities, Injuries))
+
+harmful.events <- melt(head(harmful.events), id.vars = "event.type", variable.name = "Severity")
+
+harmful.events.plot <- ggplot(harmful.events, aes(reorder(event.type, -value), y = value, fill = Severity)) + 
+  geom_bar(stat = "identity", position = "stack") + 
+  scale_fill_manual(values = c("green3", "forestgreen")) +  
+  xlab("Weather Event") + 
+  ylab("Total Occurences") + 
+  ggtitle("Most Harmful US Weather Events (1950 - 2011)")
+  
+print(harmful.events.plot)
+```
+The tornado is by far the most harmful US weather event.  Injuries vastly outnumber fatalities in most cases.
+
+### Question 2: Across the United States, which types of events have the greatest economic consequences?
+```{r}
+expensive.events <- cleaned.storm.data %>% 
+  group_by(event.type) %>%
+  summarize(Agriculture = sum(crop.dmg)/10^9, Property = sum(prop.dmg)/10^9) %>% 
+  arrange(desc(Agriculture, Property))
+
+expensive.events <- melt(head(expensive.events), id.vars = "event.type", variable.name = "Category")
+
+expensive.events.plot <- ggplot(expensive.events, 
+                                aes(reorder(event.type, -value), y = value, fill = Category)) + 
+  geom_bar(stat = "identity", position = "stack") + 
+  scale_fill_manual(values = c("green3", "forestgreen")) + 
+  xlab("Weather Event") + 
+  ylab("Total Damage (USD Billions)") + 
+  ggtitle("Most Expensive US Weather Events (1950 - 2011)")
+
+print(expensive.events.plot) 
+```
+Flooding has the greatest property damage while drought damages the most agriculture.
